@@ -1,102 +1,74 @@
 package com.example.chatapplication
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
+import kotlinx.coroutines.flow.flowOn
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
-class RoutingManager(private val context: Context, private val llmEngine: LlmEngine) {
+class RoutingManager(private val context: Context, private val localEngine: LlmEngine) {
 
-    private var isNetworkAvailable = false
-
-    init {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        
-        val networkRequest = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-            
-        connectivityManager.registerNetworkCallback(networkRequest, object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                isNetworkAvailable = true
-            }
-
-            override fun onLost(network: Network) {
-                isNetworkAvailable = false
-            }
-        })
-        
-        // Initial state check
-        val activeNetwork = connectivityManager.activeNetwork
-        val caps = connectivityManager.getNetworkCapabilities(activeNetwork)
-        isNetworkAvailable = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-    }
-
-    private fun isLocalModelReady(): Boolean {
-        // Technically this should check the exact file, or if the MediaPipe engine is successfully loaded
-        val file = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin")
-        return file.exists()
-    }
-
-    suspend fun getChatResponse(prompt: String): Flow<String> = flow {
-        if (isLocalModelReady()) {
-            Log.d("RoutingManager", "Routing to LOCAL LLM Engine.")
-            
-            // ⚠️ Format the prompt specifically for Gemma IT models locally
-            val formattedPrompt = "<start_of_turn>user\n$prompt<end_of_turn>\n<start_of_turn>model\n"
-            
-            llmEngine.generateResponseStream(formattedPrompt).collect {
-                emit(it)
-            }
+    fun getChatResponse(prompt: String, isOnline: Boolean, apiKey: String): Flow<String> {
+        return if (isOnline && apiKey.isNotBlank()) {
+            getRemoteResponse(prompt, apiKey)
         } else {
-            if (!isNetworkAvailable) {
-                emit("Error: Local model is still downloading and NO network connection is available for fallback.")
-                return@flow
-            }
-            
-            Log.d("RoutingManager", "Routing to REMOTE Cloud API Fallback...")
-            
-            // Wait up to strictly 3 seconds
-            val response = fetchFromRemoteAPI(prompt)
-            if (response != null) {
-                emit(response)
-            } else {
-                emit("Error: Remote API timed out or failed to respond after 3 seconds.")
-            }
+            localEngine.generateResponseStream(prompt)
         }
     }
 
-    private suspend fun fetchFromRemoteAPI(prompt: String): String? = withContext(Dispatchers.IO) {
-        withTimeoutOrNull(3000L) { // STRICT 3-second timeout
-            try {
-                // Placeholder for an actual Remote API call
-                val url = URL("https://example.com/api/chat?prompt=${prompt.replace(" ", "%20")}")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 3000
-                connection.readTimeout = 3000
-                
-                // If it connects, we simulate an API response.
-                // In production, you'd parse JSON response here.
-                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                    "This is a fallback response from the Cloud API. The local model is currently downloading."
-                } else {
-                    null
-                }
-            } catch (e: Exception) {
-                Log.e("RoutingManager", "Network fallback call failed: ${e.message}")
-                null
+    private fun getRemoteResponse(prompt: String, apiKey: String): Flow<String> = flow {
+        try {
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            // FIX: JSONObject.quote() handles all special chars correctly
+            val safePromptInner = JSONObject.quote(prompt).let { it.substring(1, it.length - 1) }
+            val jsonPayload = """{"contents": [{"parts":[{"text": "$safePromptInner"}]}]}"""
+
+            OutputStreamWriter(connection.outputStream).use { writer ->
+                writer.write(jsonPayload)
+                writer.flush()
             }
+
+            val responseCode = connection.responseCode
+            Log.d("RoutingManager", "Cloud response code: $responseCode")
+
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val responseString = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+
+                // FIX: JSONObject parsing — reliable regardless of quotes/newlines
+                try {
+                    val json = JSONObject(responseString)
+                    val text = json
+                        .getJSONArray("candidates")
+                        .getJSONObject(0)
+                        .getJSONObject("content")
+                        .getJSONArray("parts")
+                        .getJSONObject(0)
+                        .getString("text")
+                    emit(text)
+                } catch (parseEx: Exception) {
+                    Log.e("RoutingManager", "JSON parse failed: ${parseEx.message}")
+                    emit("[Error parsing cloud response: ${parseEx.message}]")
+                }
+            } else {
+                val errorBody = connection.errorStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
+                Log.e("RoutingManager", "Cloud HTTP $responseCode: $errorBody")
+                emit("[Cloud Error: HTTP $responseCode] — Check your API key.")
+            }
+        } catch (e: Exception) {
+            Log.e("RoutingManager", "Network error: ${e.message}")
+            emit("[Network failed: ${e.message}]")
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }

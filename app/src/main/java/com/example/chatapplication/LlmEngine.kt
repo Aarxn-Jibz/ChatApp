@@ -13,49 +13,76 @@ import java.io.File
 class LlmEngine(private val context: Context) {
     private var llmInference: LlmInference? = null
 
-    // A channel to safely catch the tokens from MediaPipe and pass them to our UI
-    // Change this line near the top of LlmEngine.kt:
-    private val tokenChannel = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
+    // We use a shared reference to route the callbacks from the listener to the active flow.
+    private var currentTokenChannel: Channel<Pair<String, Boolean>>? = null
 
-    // 1. Initialize the model
+    // Configurable model path — set before calling initialize()
+    var modelPath: String = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin").absolutePath
+
     suspend fun initialize() = withContext(Dispatchers.IO) {
-        // THE FIX: Changed from filesDir to getExternalFilesDir so Windows can see it!
-        val modelFile = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin")
-        Log.d("LLM_TEST", "Reality Check -> File exists: ${modelFile.exists()}")
-        Log.d("LLM_TEST", "Reality Check -> File size: ${modelFile.length() / (1024 * 1024)} MB")
+        val modelFile = File(modelPath)
+        Log.d("LLM", "Loading model from: $modelPath")
+        Log.d("LLM", "File exists: ${modelFile.exists()}, Size: ${modelFile.length() / (1024 * 1024)} MB")
 
         try {
-            Log.d("LLM_TEST", "Starting initialization. Watch the RAM!")
-
             val options = LlmInference.LlmInferenceOptions.builder()
-                // THE FIX: Use the external file path we just created above
-                .setModelPath(modelFile.absolutePath)
+                .setModelPath(modelPath)
                 .setMaxTokens(512)
+                // FIX: Attach the result listener here during configuration
                 .setResultListener { partialResult, done ->
-                    tokenChannel.trySend(Pair(partialResult ?: "", done))
+                    currentTokenChannel?.trySend(Pair(partialResult ?: "", done))
+                    if (done) currentTokenChannel?.close()
                 }
                 .build()
 
             llmInference = LlmInference.createFromOptions(context, options)
-            Log.d("LLM_TEST", "SUCCESS: Model loaded into memory without crashing.")
+            Log.d("LLM", "SUCCESS: Model loaded.")
         } catch (e: Exception) {
-            Log.e("LLM_TEST", "CRASH: Failed to load model: ${e.message}")
+            Log.e("LLM", "FAILED to load model: ${e.message}")
         }
     }
 
-    // 2. Generate the response
     fun generateResponseStream(prompt: String): Flow<String> = flow {
-        try {
-            // Trigger the model
-            llmInference?.generateResponseAsync(prompt)
+        if (llmInference == null) {
+            emit("[Error: Local model is not loaded. Please load a model first.]")
+            return@flow
+        }
 
-            // Listen to our channel and emit tokens to the UI until it says "done"
+        // Create a new channel for this specific interaction
+        val tokenChannel = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
+
+        // Assign it to the class-level variable so the listener in initialize() can send to it
+        currentTokenChannel = tokenChannel
+
+        try {
+            // FIX: generateResponseAsync takes ONLY the prompt.
+            llmInference!!.generateResponseAsync(prompt)
+
             for ((token, done) in tokenChannel) {
                 emit(token)
                 if (done) break
             }
         } catch (e: Exception) {
-            Log.e("LLM_TEST", "Inference failed: ${e.message}")
+            Log.e("LLM", "Inference failed: ${e.message}")
+            emit("[Local inference error: ${e.message}]")
+        } finally {
+            // FIX: close() is safe to call repeatedly. Removes the "Delicate API" warning.
+            tokenChannel.close()
+
+            // Clean up the reference to prevent memory leaks or stray emissions
+            if (currentTokenChannel == tokenChannel) {
+                currentTokenChannel = null
+            }
         }
+    }
+
+    fun isLoaded(): Boolean = llmInference != null
+
+    @Suppress("unused") // Suppresses the unused warning until you implement it in UI
+    fun release() {
+        llmInference?.close()
+        llmInference = null
+        currentTokenChannel?.close()
+        currentTokenChannel = null
     }
 }

@@ -9,56 +9,76 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+data class ChatMessage(
+    val role: String,         // "User" or "Bot"
+    val text: String,
+    val isThinking: Boolean = false,
+    val isError: Boolean = false
+)
+
 class ChatViewModel : ViewModel() {
 
-    private val _uiState = MutableStateFlow("Type a message below to start chatting!")
-    val uiState: StateFlow<String> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow<List<ChatMessage>>(
+        listOf(ChatMessage("Bot", "Type a message below to start chatting!"))
+    )
+    val uiState: StateFlow<List<ChatMessage>> = _uiState.asStateFlow()
 
-    // This list holds our conversation history
-    private var conversationHistory = mutableListOf<String>()
+    // Prevents spamming Send while a response is still streaming
+    private val _isGenerating = MutableStateFlow(false)
+    val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
-    fun sendPrompt(prompt: String, routingManager: RoutingManager) {
+    // Context window size — configurable via Settings (Phase 5)
+    var contextWindowSize: Int = 6
+
+    fun sendPrompt(prompt: String, routingManager: RoutingManager, isOnlineMode: Boolean, apiKey: String) {
+        if (_isGenerating.value) return // Guard against concurrent sends
+
         viewModelScope.launch(Dispatchers.Main) {
-            // 1. Add the new user prompt
-            conversationHistory.add("User: $prompt")
+            _isGenerating.value = true
 
-            // 🛑 CRITICAL DEMO FIX: Shrink the memory window!
-            // Budget phones will choke on large context windows.
-            // We only keep the last 3 messages (Prev Q, Prev A, New Q).
-            if (conversationHistory.size > 3) {
-                conversationHistory = conversationHistory.takeLast(3).toMutableList()
+            val currentHistory = _uiState.value
+                .filter { !it.isThinking }
+                .toMutableList()
+            currentHistory.add(ChatMessage("User", prompt))
+
+            val trimmedHistory = if (currentHistory.size > contextWindowSize) {
+                currentHistory.takeLast(contextWindowSize).toMutableList()
+            } else {
+                currentHistory
             }
 
-            // Update UI to show "Thinking"
-            _uiState.value = conversationHistory.joinToString("\n\n") + "\n\nBot: (Thinking...)"
+            // Show thinking indicator
+            _uiState.value = trimmedHistory.toMutableList().apply {
+                add(ChatMessage("Bot", "...", isThinking = true))
+            }
 
-            val fullPromptContext = conversationHistory.joinToString("\n") + "\nBot: "
+            val fullPrompt = trimmedHistory.joinToString("\n") { "${it.role}: ${it.text}" } + "\nBot: "
             var currentBotResponse = ""
 
-            // 🛑 CRITICAL DEMO FIX: Move the heavy AI generation OFF the main thread!
-            // This prevents the app from freezing (the ANR warning in your logs).
             withContext(Dispatchers.IO) {
                 try {
-                    routingManager.getChatResponse(fullPromptContext).collect { token ->
+                    routingManager.getChatResponse(fullPrompt, isOnlineMode, apiKey).collect { token ->
                         currentBotResponse += token
-
-                        // Switch back to Main Thread ONLY to update the screen
                         withContext(Dispatchers.Main) {
-                            _uiState.value = conversationHistory.joinToString("\n\n") + "\n\nBot: $currentBotResponse"
+                            _uiState.value = trimmedHistory.toMutableList().apply {
+                                add(ChatMessage("Bot", currentBotResponse))
+                            }
                         }
                     }
-
-                    // When finished, save to history
-                    withContext(Dispatchers.Main) {
-                        conversationHistory.add("Bot: ${currentBotResponse.trim()}")
-                    }
-
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        _uiState.value = "Error: ${e.message}"
+                        _uiState.value = trimmedHistory.toMutableList().apply {
+                            add(ChatMessage("Bot", "Error: ${e.message}", isError = true))
+                        }
                     }
                 }
             }
+
+            _isGenerating.value = false
         }
+    }
+
+    fun clearChat() {
+        _uiState.value = listOf(ChatMessage("Bot", "Chat cleared. Start a new conversation!"))
     }
 }
