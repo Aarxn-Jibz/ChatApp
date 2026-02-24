@@ -68,7 +68,7 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
             llmEngine = llmEngine
         )
     } else {
-        ChatScreen(routingManager = routingManager, llmEngine = llmEngine)
+        ChatScreen(routingManager = routingManager, llmEngine = llmEngine, isOnlineMode = skipToCloud)
     }
 }
 
@@ -90,7 +90,7 @@ fun ModelStartScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("AI Chat", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text("Chat Application", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(modifier = Modifier.height(8.dp))
         Text("Choose how to start", color = Color.Gray, fontSize = 14.sp)
         Spacer(modifier = Modifier.height(48.dp))
@@ -140,6 +140,7 @@ fun ModelStartScreen(
 fun ChatScreen(
     routingManager: RoutingManager,
     llmEngine: LlmEngine,
+    isOnlineMode: Boolean,
     viewModel: ChatViewModel = viewModel()
 ) {
     val messages by viewModel.uiState.collectAsState()
@@ -152,7 +153,6 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    var isOnlineMode by remember { mutableStateOf(false) }
     var apiKey by remember { mutableStateOf("") }
     var showApiKeyDialog by remember { mutableStateOf(false) }
 
@@ -191,7 +191,6 @@ fun ChatScreen(
                 TextButton(onClick = {
                     if (tempKey.isNotBlank()) {
                         apiKey = tempKey.trim()
-                        isOnlineMode = true
                         showApiKeyDialog = false
                     } else {
                         coroutineScope.launch { snackbarHostState.showSnackbar("API key cannot be empty") }
@@ -212,7 +211,7 @@ fun ChatScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI Chat", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Chat Application", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         val modeLabel = when {
                             isOnlineMode -> "Cloud · Gemini 2.5 Flash"
                             llmEngine.isLoaded() -> "Local · Gemma"
@@ -279,27 +278,6 @@ fun ChatScreen(
                             disabledTextColor = Color.Gray
                         )
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Mode toggle
-                    val modeColor by animateColorAsState(
-                        if (isOnlineMode) Color(0xFF4CAF50) else Color(0xFF333333), label = "mode"
-                    )
-                    FilledIconButton(
-                        onClick = {
-                            if (apiKey.isBlank()) showApiKeyDialog = true
-                            else {
-                                isOnlineMode = !isOnlineMode
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(if (isOnlineMode) "Cloud mode" else "Local mode")
-                                }
-                            }
-                        },
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = modeColor),
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Text(if (isOnlineMode) "☁" else "📱", fontSize = 18.sp)
-                    }
                     Spacer(modifier = Modifier.width(8.dp))
 
                     // Send button
