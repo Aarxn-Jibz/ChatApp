@@ -3,51 +3,33 @@ package com.example.chatapplication
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class ChatViewModel : ViewModel() {
 
-    private val _uiState = MutableStateFlow("Tap 'Test Prompt' to start.")
+    private val _uiState = MutableStateFlow("Type a message below to start chatting!")
     val uiState: StateFlow<String> = _uiState.asStateFlow()
 
-    fun sendPrompt(prompt: String, llmEngine: LlmEngine) {
-        viewModelScope.launch {
-            _uiState.value = "Generating... (Thinking)"
-            val stringBuilder = StringBuilder()
-            var isGenerating = true
+    fun sendPrompt(prompt: String, routingManager: RoutingManager) {
+        viewModelScope.launch(Dispatchers.Main) {
+            // Update the UI immediately to show the user's question
+            _uiState.value = "You: $prompt\n\nBot: (Thinking...)"
 
-            // ⚠️ THE FIX: Format the prompt specifically for Gemma IT models
-            val formattedPrompt = "<start_of_turn>user\n$prompt<end_of_turn>\n<start_of_turn>model\n"
-
-            val uiUpdaterJob = launch {
-                while (isGenerating) {
-                    delay(100)
-                    if (stringBuilder.isNotEmpty()) {
-                        _uiState.value = stringBuilder.toString()
-                    }
-                }
-                if (stringBuilder.isNotEmpty()) {
-                    _uiState.value = stringBuilder.toString()
-                }
-            }
+            // Set up the string that will hold the final typed-out response
+            var currentResponse = "You: $prompt\n\nBot: "
 
             try {
-                // Send the formatted prompt instead of the raw one
-                llmEngine.generateResponseStream(formattedPrompt).collect { token ->
-                    stringBuilder.append(token)
-                    // Let's also print to Logcat so you can prove it's working behind the scenes!
+                routingManager.getChatResponse(prompt).collect { token ->
+                    currentResponse += token
+                    _uiState.value = currentResponse // Push the new token to the screen
                     Log.d("LLM_TEST", "Token received: $token")
                 }
             } catch (e: Exception) {
                 _uiState.value = "Error: ${e.message}"
-            } finally {
-                isGenerating = false
-                uiUpdaterJob.join()
             }
         }
     }

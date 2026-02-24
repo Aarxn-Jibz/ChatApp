@@ -8,30 +8,30 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color // <-- Added for Color.Black / Color.White
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
 
-    // We create the engine here at the Activity level so it doesn't get
-    // destroyed and recreated every time the screen rotates or updates.
     private lateinit var llmEngine: LlmEngine
+    private lateinit var routingManager: RoutingManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize the engine class with the activity context
         llmEngine = LlmEngine(this)
+        routingManager = RoutingManager(this, llmEngine)
 
         setContent {
             MaterialTheme {
+                // FORCED BLACK BACKGROUND
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = Color.Black
                 ) {
-                    // Start the main app flow
-                    AppNavigation(llmEngine)
+                    AppNavigation(llmEngine, routingManager)
                 }
             }
         }
@@ -39,8 +39,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppNavigation(llmEngine: LlmEngine) {
-    // State to track if we should show the Chat screen yet
+fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
     var isModelLoaded by remember { mutableStateOf(false) }
     var isInitializing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -53,47 +52,43 @@ fun AppNavigation(llmEngine: LlmEngine) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (isInitializing) {
-                CircularProgressIndicator()
+                CircularProgressIndicator(color = Color.White) // White spinner
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Loading 1.3GB Model into RAM... Please wait.")
+                Text("Loading Local Model into RAM...", color = Color.White) // White text
             } else {
                 Button(onClick = {
                     isInitializing = true
-
                     coroutineScope.launch {
-                        // ⚠️ YOUR INIT CODE GOES HERE ⚠️
-                        // I don't know the exact name of your init function,
-                        // but it might look something like this:
                         llmEngine.initialize()
-
-                        // Once it finishes loading without crashing, switch screens:
                         isModelLoaded = true
                         isInitializing = false
                     }
                 }) {
-                    Text("1. Initialise Model")
+                    Text("1. Initialise Model", color = Color.White)
                 }
             }
         }
     } else {
-        // --- SCREEN 2: The Chat UI ---
-        // Once isModelLoaded is true, the UI automatically flips to this screen!
-        ChatScreen(llmEngine = llmEngine)
+        // --- SCREEN 2: The Interactive Chat UI ---
+        ChatScreen(routingManager = routingManager)
     }
 }
+
 @Composable
-fun ChatScreen(llmEngine: LlmEngine, viewModel: ChatViewModel = viewModel()) {
-    // Correctly observe the StateFlow
+fun ChatScreen(routingManager: RoutingManager, viewModel: ChatViewModel = viewModel()) {
     val responseText by viewModel.uiState.collectAsState()
+    var userInput by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // The Conversation Display
         Text(
             text = responseText,
             style = MaterialTheme.typography.bodyLarge,
+            color = Color.White, // FORCED WHITE TEXT
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -101,11 +96,38 @@ fun ChatScreen(llmEngine: LlmEngine, viewModel: ChatViewModel = viewModel()) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Button(
-            onClick = { viewModel.sendPrompt("Tell me a dad joke.", llmEngine) },
-            modifier = Modifier.fillMaxWidth()
+        // The Text Input and Send Button Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("2. Test Prompt")
+            OutlinedTextField(
+                value = userInput,
+                onValueChange = { userInput = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Type your message...", color = Color.LightGray) },
+                // Force the text field to be visible on black background
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = Color.White,
+                    unfocusedBorderColor = Color.Gray,
+                    cursorColor = Color.White
+                )
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(
+                onClick = {
+                    if (userInput.isNotBlank()) {
+                        viewModel.sendPrompt(userInput, routingManager)
+                        userInput = ""
+                    }
+                }
+            ) {
+                Text("Send", color = Color.White)
+            }
         }
     }
 }
