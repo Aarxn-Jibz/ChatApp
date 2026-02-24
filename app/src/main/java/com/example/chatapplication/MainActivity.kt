@@ -4,11 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState // <-- Added for scrolling
+import androidx.compose.foundation.verticalScroll // <-- Added for scrolling
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color // <-- Added for Color.Black / Color.White
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -26,7 +28,6 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                // FORCED BLACK BACKGROUND
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color.Black
@@ -45,16 +46,15 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
     val coroutineScope = rememberCoroutineScope()
 
     if (!isModelLoaded) {
-        // --- SCREEN 1: Initialization ---
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (isInitializing) {
-                CircularProgressIndicator(color = Color.White) // White spinner
+                CircularProgressIndicator(color = Color.White)
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Loading Local Model into RAM...", color = Color.White) // White text
+                Text("Loading Local Model into RAM...", color = Color.White)
             } else {
                 Button(onClick = {
                     isInitializing = true
@@ -69,7 +69,6 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
             }
         }
     } else {
-        // --- SCREEN 2: The Interactive Chat UI ---
         ChatScreen(routingManager = routingManager)
     }
 }
@@ -78,6 +77,14 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
 fun ChatScreen(routingManager: RoutingManager, viewModel: ChatViewModel = viewModel()) {
     val responseText by viewModel.uiState.collectAsState()
     var userInput by remember { mutableStateOf("") }
+
+    // 1. Create the scroll state
+    val scrollState = rememberScrollState()
+
+    // 2. Auto-scroll to the bottom whenever the text updates
+    LaunchedEffect(responseText) {
+        scrollState.animateScrollTo(scrollState.maxValue)
+    }
 
     Column(
         modifier = Modifier
@@ -88,10 +95,11 @@ fun ChatScreen(routingManager: RoutingManager, viewModel: ChatViewModel = viewMo
         Text(
             text = responseText,
             style = MaterialTheme.typography.bodyLarge,
-            color = Color.White, // FORCED WHITE TEXT
+            color = Color.White,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .verticalScroll(scrollState) // 3. Attach the scroll state here!
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -106,7 +114,6 @@ fun ChatScreen(routingManager: RoutingManager, viewModel: ChatViewModel = viewMo
                 onValueChange = { userInput = it },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Type your message...", color = Color.LightGray) },
-                // Force the text field to be visible on black background
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
