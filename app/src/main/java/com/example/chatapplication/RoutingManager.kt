@@ -25,7 +25,7 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
 
     private fun getRemoteResponse(prompt: String, apiKey: String): Flow<String> = flow {
         try {
-            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey")
+            val url = URL("https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=$apiKey")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -35,7 +35,7 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
             val safePromptInner = JSONObject.quote(prompt).let { it.substring(1, it.length - 1) }
             val jsonPayload = """{"contents": [{"parts":[{"text": "$safePromptInner"}]}]}"""
 
-            OutputStreamWriter(connection.outputStream).use { writer ->
+            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
                 writer.write(jsonPayload)
                 writer.flush()
             }
@@ -44,19 +44,31 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
             Log.d("RoutingManager", "Cloud response code: $responseCode")
 
             if (responseCode == HttpURLConnection.HTTP_OK) {
-                val responseString = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+                val responseString = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { it.readText() }
 
-                // FIX: JSONObject parsing — reliable regardless of quotes/newlines
+                // FIX: JSONObject parsing — handle candidates and safety ratings gracefully
                 try {
                     val json = JSONObject(responseString)
-                    val text = json
-                        .getJSONArray("candidates")
-                        .getJSONObject(0)
-                        .getJSONObject("content")
-                        .getJSONArray("parts")
-                        .getJSONObject(0)
-                        .getString("text")
-                    emit(text)
+                    
+                    // Check if candidates array exists and has items
+                    val candidates = json.optJSONArray("candidates")
+                    if (candidates != null && candidates.length() > 0) {
+                        val text = candidates
+                            .getJSONObject(0)
+                            .getJSONObject("content")
+                            .getJSONArray("parts")
+                            .getJSONObject(0)
+                            .getString("text")
+                        emit(text)
+                    } 
+                    // Fallback to checking for safety feedback if blocked
+                    else if (json.has("promptFeedback")) {
+                        val feedback = json.getJSONObject("promptFeedback")
+                        val blockReason = feedback.optString("blockReason", "Unknown")
+                        emit("[Blocked by Safety Filters: $blockReason]")
+                    } else {
+                        emit("[Error: Unexpected response format]")
+                    }
                 } catch (parseEx: Exception) {
                     Log.e("RoutingManager", "JSON parse failed: ${parseEx.message}")
                     emit("[Error parsing cloud response: ${parseEx.message}]")

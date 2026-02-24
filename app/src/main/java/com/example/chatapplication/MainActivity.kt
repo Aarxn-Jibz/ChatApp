@@ -190,7 +190,9 @@ fun ChatScreen(
             confirmButton = {
                 TextButton(onClick = {
                     if (tempKey.isNotBlank()) {
-                        apiKey = tempKey; isOnlineMode = true; showApiKeyDialog = false
+                        apiKey = tempKey.trim()
+                        isOnlineMode = true
+                        showApiKeyDialog = false
                     } else {
                         coroutineScope.launch { snackbarHostState.showSnackbar("API key cannot be empty") }
                     }
@@ -212,7 +214,7 @@ fun ChatScreen(
                     Column {
                         Text("AI Chat", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         val modeLabel = when {
-                            isOnlineMode -> "Cloud · Gemini 1.5 Flash"
+                            isOnlineMode -> "Cloud · Gemini 2.5 Flash"
                             llmEngine.isLoaded() -> "Local · Gemma"
                             else -> "No model loaded"
                         }
