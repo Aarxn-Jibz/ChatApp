@@ -60,6 +60,8 @@ class MainActivity : ComponentActivity() {
 fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
     var isModelLoaded by remember { mutableStateOf(false) }
     var skipToCloud by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val networkMonitor = remember { NetworkMonitor(context) }
 
     if (!isModelLoaded && !skipToCloud) {
         ModelStartScreen(
@@ -68,7 +70,12 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
             llmEngine = llmEngine
         )
     } else {
-        ChatScreen(routingManager = routingManager, llmEngine = llmEngine, initialOnlineMode = skipToCloud)
+        ChatScreen(
+            routingManager = routingManager, 
+            llmEngine = llmEngine, 
+            networkMonitor = networkMonitor,
+            initialOnlineMode = skipToCloud
+        )
     }
 }
 
@@ -140,6 +147,7 @@ fun ModelStartScreen(
 fun ChatScreen(
     routingManager: RoutingManager,
     llmEngine: LlmEngine,
+    networkMonitor: NetworkMonitor,
     initialOnlineMode: Boolean,
     viewModel: ChatViewModel = viewModel()
 ) {
@@ -158,9 +166,25 @@ fun ChatScreen(
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    
+    val isConnected by networkMonitor.isConnected.collectAsState()
+    var wasConnected by remember { mutableStateOf(isConnected) }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+
+    LaunchedEffect(isConnected) {
+        if (wasConnected && !isConnected && isOnlineMode) {
+            // Network dropped while online mode was requested
+            isOnlineMode = false
+            Toast.makeText(context, "Network lost. Switching to Local Model.", Toast.LENGTH_LONG).show()
+        } else if (!wasConnected && isConnected && !isOnlineMode && savedApiKey.isNotBlank()) {
+            // Network restored, automatically switch back to online
+            isOnlineMode = true
+            Toast.makeText(context, "Network restored. Switching back to Cloud Model.", Toast.LENGTH_SHORT).show()
+        }
+        wasConnected = isConnected
     }
 
     // API Key Dialog
@@ -219,7 +243,8 @@ fun ChatScreen(
                     Column {
                         Text("Chat Application", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         val modeLabel = when {
-                            isOnlineMode -> "Cloud · Gemini 2.5 Flash"
+                            isOnlineMode && isConnected -> "Cloud · Gemini 2.5 Flash"
+                            isOnlineMode && !isConnected -> "Local · Gemma (Offline Fallback)"
                             llmEngine.isLoaded() -> "Local · Gemma"
                             else -> "No model loaded"
                         }
@@ -319,7 +344,7 @@ fun ChatScreen(
                                 if (isOnlineMode && savedApiKey.isBlank()) {
                                     showApiKeyDialog = true
                                 } else {
-                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, savedApiKey)
+                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, savedApiKey, networkMonitor)
                                     userInput = ""
                                 }
                             }
@@ -378,9 +403,21 @@ fun MessageBubble(message: ChatMessage, onCopy: () -> Unit) {
                     }
                 }
                 if (!message.isThinking) {
-                    Row(modifier = Modifier.padding(top = 4.dp, start = 4.dp)) {
+                    Row(
+                        modifier = Modifier.padding(top = 4.dp, start = 4.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         TextButton(onClick = onCopy, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
                             Text("📋 Copy", color = Color.Gray, fontSize = 11.sp)
+                        }
+                        if (message.source != null) {
+                            Text(
+                                "via ${message.source}", 
+                                color = Color.DarkGray, 
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
                         }
                     }
                 }

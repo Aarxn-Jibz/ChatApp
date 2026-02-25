@@ -13,7 +13,8 @@ data class ChatMessage(
     val role: String,         // "User" or "Bot"
     val text: String,
     val isThinking: Boolean = false,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val source: String? = null // "Cloud" or "Local"
 )
 
 class ChatViewModel : ViewModel() {
@@ -30,7 +31,7 @@ class ChatViewModel : ViewModel() {
     // Context window size — configurable via Settings (Phase 5)
     var contextWindowSize: Int = 6
 
-    fun sendPrompt(prompt: String, routingManager: RoutingManager, isOnlineMode: Boolean, apiKey: String) {
+    fun sendPrompt(prompt: String, routingManager: RoutingManager, isOnlineMode: Boolean, apiKey: String, networkMonitor: NetworkMonitor) {
         if (_isGenerating.value) return // Guard against concurrent sends
 
         viewModelScope.launch(Dispatchers.Main) {
@@ -60,8 +61,11 @@ class ChatViewModel : ViewModel() {
                     routingManager.getChatResponse(fullPrompt, isOnlineMode, apiKey).collect { token ->
                         currentBotResponse += token
                         withContext(Dispatchers.Main) {
+                            val actualSource = if (currentBotResponse.contains("Falling back to Local Model")) "Local" 
+                                               else if (isOnlineMode && networkMonitor.isConnected.value) "Cloud" 
+                                               else "Local"
                             _uiState.value = trimmedHistory.toMutableList().apply {
-                                add(ChatMessage("Bot", currentBotResponse))
+                                add(ChatMessage("Bot", currentBotResponse, source = actualSource))
                             }
                         }
                     }

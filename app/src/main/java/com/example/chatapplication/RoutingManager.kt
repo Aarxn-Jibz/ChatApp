@@ -67,20 +67,25 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
                         val blockReason = feedback.optString("blockReason", "Unknown")
                         emit("[Blocked by Safety Filters: $blockReason]")
                     } else {
-                        emit("[Error: Unexpected response format]")
+                        Log.e("RoutingManager", "Unexpected response format. Falling back to local model.")
+                        emit("[Notice: Cloud API returned unexpected format. Falling back to Local Model]\n\n")
+                        localEngine.generateResponseStream(prompt).collect { emit(it) }
                     }
                 } catch (parseEx: Exception) {
-                    Log.e("RoutingManager", "JSON parse failed: ${parseEx.message}")
-                    emit("[Error parsing cloud response: ${parseEx.message}]")
+                    Log.e("RoutingManager", "JSON parse failed: ${parseEx.message}. Falling back to local model.")
+                    emit("[Notice: Cloud API parsing failed. Falling back to Local Model]\n\n")
+                    localEngine.generateResponseStream(prompt).collect { emit(it) }
                 }
             } else {
                 val errorBody = connection.errorStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
-                Log.e("RoutingManager", "Cloud HTTP $responseCode: $errorBody")
-                emit("[Cloud Error: HTTP $responseCode] — Check your API key.")
+                Log.e("RoutingManager", "Cloud HTTP $responseCode: $errorBody. Falling back to local model.")
+                emit("[Notice: Cloud API Error (HTTP $responseCode). Falling back to Local Model]\n\n")
+                localEngine.generateResponseStream(prompt).collect { emit(it) }
             }
         } catch (e: Exception) {
-            Log.e("RoutingManager", "Network error: ${e.message}")
-            emit("[Network failed: ${e.message}]")
+            Log.e("RoutingManager", "Network error: ${e.message}. Falling back to local model.")
+            emit("[Notice: Network connection failed. Falling back to Local Model]\n\n")
+            localEngine.generateResponseStream(prompt).collect { emit(it) }
         }
     }.flowOn(Dispatchers.IO)
 }
