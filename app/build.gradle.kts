@@ -60,6 +60,9 @@ dependencies {
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
+    // DataStore Preferences
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+
     // MediaPipe LLM
     implementation("com.google.mediapipe:tasks-genai:0.10.20")
     implementation(libs.core.ktx)

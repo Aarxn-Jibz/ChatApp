@@ -68,7 +68,7 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
             llmEngine = llmEngine
         )
     } else {
-        ChatScreen(routingManager = routingManager, llmEngine = llmEngine, isOnlineMode = skipToCloud)
+        ChatScreen(routingManager = routingManager, llmEngine = llmEngine, initialOnlineMode = skipToCloud)
     }
 }
 
@@ -79,8 +79,31 @@ fun ModelStartScreen(
     onLocalModelLoaded: () -> Unit,
     onCloudOnly: () -> Unit
 ) {
+    val context = LocalContext.current
+    var downloadProgress by remember { mutableStateOf(-1) }
     var isInitializing by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        val workManager = androidx.work.WorkManager.getInstance(context)
+        val workRequest = androidx.work.OneTimeWorkRequestBuilder<ModelDownloadWorker>().build()
+        workManager.enqueueUniqueWork("ModelDownload", androidx.work.ExistingWorkPolicy.KEEP, workRequest)
+        
+        workManager.getWorkInfosForUniqueWorkFlow("ModelDownload").collect { workInfos ->
+            val workInfo = workInfos.firstOrNull()
+            if (workInfo != null) {
+                if (workInfo.state == androidx.work.WorkInfo.State.RUNNING) {
+                    downloadProgress = workInfo.progress.getInt("PROGRESS", 0)
+                } else if (workInfo.state == androidx.work.WorkInfo.State.SUCCEEDED && !isInitializing) {
+                    isInitializing = true
+                    llmEngine.initialize()
+                    onLocalModelLoaded()
+                } else if (workInfo.state == androidx.work.WorkInfo.State.FAILED) {
+                    // Fallback to cloud if download fails
+                    onCloudOnly()
+                }
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -92,44 +115,21 @@ fun ModelStartScreen(
     ) {
         Text("Chat Application", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(modifier = Modifier.height(8.dp))
-        Text("Choose how to start", color = Color.Gray, fontSize = 14.sp)
+        Text("Preparing models...", color = Color.Gray, fontSize = 14.sp)
         Spacer(modifier = Modifier.height(48.dp))
 
         if (isInitializing) {
             CircularProgressIndicator(color = Color(0xFF4CAF50))
             Spacer(modifier = Modifier.height(16.dp))
             Text("Loading model into memory…", color = Color.Gray, fontSize = 13.sp)
+        } else if (downloadProgress >= 0) {
+            CircularProgressIndicator(progress = downloadProgress / 100f, color = Color(0xFF4CAF50))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Downloading model... $downloadProgress%", color = Color.Gray, fontSize = 13.sp)
         } else {
-            Button(
-                onClick = {
-                    isInitializing = true
-                    coroutineScope.launch {
-                        llmEngine.initialize()
-                        isInitializing = false
-                        onLocalModelLoaded()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E1E1E)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("🔒  Use Local Model", color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text("Private · No internet needed", color = Color.Gray, fontSize = 12.sp)
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onCloudOnly,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B2E1B)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("☁️  Use Cloud (Gemini)", color = Color(0xFF4CAF50), fontWeight = FontWeight.SemiBold)
-                    Text("Requires Gemini API key", color = Color.Gray, fontSize = 12.sp)
-                }
-            }
+            CircularProgressIndicator(color = Color(0xFF4CAF50))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Checking local model...", color = Color.Gray, fontSize = 13.sp)
         }
     }
 }
@@ -140,21 +140,24 @@ fun ModelStartScreen(
 fun ChatScreen(
     routingManager: RoutingManager,
     llmEngine: LlmEngine,
-    isOnlineMode: Boolean,
+    initialOnlineMode: Boolean,
     viewModel: ChatViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+    val settingsRepository = remember { SettingsRepository(context) }
+    val savedApiKey by settingsRepository.apiKeyFlow.collectAsState(initial = "")
+    
+    var isOnlineMode by remember { mutableStateOf(initialOnlineMode) }
+    var showApiKeyDialog by remember { mutableStateOf(false) }
+
     val messages by viewModel.uiState.collectAsState()
     val isGenerating by viewModel.isGenerating.collectAsState()
     var userInput by remember { mutableStateOf("") }
 
     val listState = rememberLazyListState()
     val clipboardManager = LocalClipboardManager.current
-    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
-
-    var apiKey by remember { mutableStateOf("") }
-    var showApiKeyDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -162,7 +165,7 @@ fun ChatScreen(
 
     // API Key Dialog
     if (showApiKeyDialog) {
-        var tempKey by remember { mutableStateOf(apiKey) }
+        var tempKey by remember { mutableStateOf(savedApiKey) }
         AlertDialog(
             onDismissRequest = { showApiKeyDialog = false },
             containerColor = Color(0xFF1E1E1E),
@@ -190,7 +193,10 @@ fun ChatScreen(
             confirmButton = {
                 TextButton(onClick = {
                     if (tempKey.isNotBlank()) {
-                        apiKey = tempKey.trim()
+                        coroutineScope.launch {
+                            settingsRepository.saveApiKey(tempKey.trim())
+                            isOnlineMode = true
+                        }
                         showApiKeyDialog = false
                     } else {
                         coroutineScope.launch { snackbarHostState.showSnackbar("API key cannot be empty") }
@@ -218,6 +224,31 @@ fun ChatScreen(
                             else -> "No model loaded"
                         }
                         Text(modeLabel, color = Color.Gray, fontSize = 11.sp)
+                    }
+                },
+                actions = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Local", color = if (!isOnlineMode) Color(0xFF4CAF50) else Color.Gray, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = isOnlineMode,
+                            onCheckedChange = { checked ->
+                                if (checked && savedApiKey.isBlank()) {
+                                    showApiKeyDialog = true
+                                } else {
+                                    isOnlineMode = checked
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF4CAF50),
+                                checkedTrackColor = Color(0xFF1B2E1B),
+                                uncheckedThumbColor = Color.LightGray,
+                                uncheckedTrackColor = Color(0xFF1A1A1A)
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Online", color = if (isOnlineMode) Color(0xFF4CAF50) else Color.Gray, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0D0D0D))
@@ -285,9 +316,10 @@ fun ChatScreen(
                         onClick = {
                             val trimmed = userInput.trim()
                             if (trimmed.isNotBlank() && !isGenerating) {
-                                if (isOnlineMode && apiKey.isBlank()) showApiKeyDialog = true
-                                else {
-                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, apiKey)
+                                if (isOnlineMode && savedApiKey.isBlank()) {
+                                    showApiKeyDialog = true
+                                } else {
+                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, savedApiKey)
                                     userInput = ""
                                 }
                             }

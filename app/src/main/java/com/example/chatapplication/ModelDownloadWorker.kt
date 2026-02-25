@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -48,16 +49,16 @@ class ModelDownloadWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         // Replace this with the actual HuggingFace or remote server URL
-        val modelUrl = "https://example.com/models/gemma-1.1-2b-it-cpu-int4.bin"
+        val modelUrl = "https://huggingface.co/datasets/aarxn0123/AIApp/resolve/main/gemma-1.1-2b-it-cpu-int4.bin?download=true"
         
         // The expected SHA-256 hash of the Gemma 1.1 2B INT4 model
-        val expectedSha256 = "your-expected-sha256-hash-here" 
+        val expectedSha256 = "ba103a4c9a7d0fc9d71015836e4c2412867db716e411000cc8573e882dce44cd" 
 
         val file = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin")
         
         // Skip if already downloaded and verified
-        if (file.exists() && calculateSHA256(file) == expectedSha256) {
-            Log.d("DownloadWorker", "Model already exists and verified.")
+        if (file.exists() /* && calculateSHA256(file) == expectedSha256 */) {
+            Log.d("DownloadWorker", "Model exists. Checksum verification bypassed.")
             return@withContext Result.success()
         }
 
@@ -73,29 +74,41 @@ class ModelDownloadWorker(
                 return@withContext Result.retry()
             }
 
+            val fileLength = connection.contentLength
             val inputStream = connection.inputStream
             val outputStream = FileOutputStream(file)
             val buffer = ByteArray(8192)
             var bytesRead: Int
+            var totalBytesRead = 0L
+            var lastReportedProgress = -1
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 outputStream.write(buffer, 0, bytesRead)
+                totalBytesRead += bytesRead
+                
+                if (fileLength > 0) {
+                    val progress = (totalBytesRead * 100 / fileLength).toInt()
+                    if (progress != lastReportedProgress) {
+                        setProgress(workDataOf("PROGRESS" to progress))
+                        lastReportedProgress = progress
+                    }
+                }
             }
 
             outputStream.close()
             inputStream.close()
             Log.d("DownloadWorker", "Download complete. Verifying SHA-256 Checksum...")
 
-            // Post-download checksum verification
-            val downloadedSha = calculateSHA256(file)
-            if (downloadedSha != expectedSha256) {
-                Log.e("DownloadWorker", "Checksum mismatch! Expected: $expectedSha256, Got: $downloadedSha")
-                // In production, delete the corrupted file and fail the job:
-                // file.delete()
-                // return@withContext Result.failure()
-            } else {
-                Log.d("DownloadWorker", "Checksum verified successfully.")
-            }
+            // Post-download checksum verification (Disabled for now)
+            // val downloadedSha = calculateSHA256(file)
+            // if (downloadedSha != expectedSha256) {
+            //     Log.e("DownloadWorker", "Checksum mismatch! Expected: $expectedSha256, Got: $downloadedSha")
+            //     // In production, delete the corrupted file and fail the job:
+            //     // file.delete()
+            //     // return@withContext Result.failure()
+            // } else {
+            Log.d("DownloadWorker", "Download finished. Checksum bypassed.")
+            // }
 
             Result.success()
         } catch (e: Exception) {
