@@ -48,12 +48,12 @@ class ModelDownloadWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         // Replace this with the actual HuggingFace or remote server URL
-        val modelUrl = "https://example.com/models/gemma-1.1-2b-it-cpu-int4.bin"
+        val modelUrl = "https://example.com/models/gemma-3-4b-it-q4_0.gguf"
         
-        // The expected SHA-256 hash of the Gemma 1.1 2B INT4 model
+        // The expected SHA-256 hash of the Gemma 3 4B GGUF model
         val expectedSha256 = "your-expected-sha256-hash-here" 
 
-        val file = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin")
+        val file = File(context.getExternalFilesDir(null), "gemma-3-4b-it-q4_0.gguf")
         
         // Skip if already downloaded and verified
         if (file.exists() && calculateSHA256(file) == expectedSha256) {

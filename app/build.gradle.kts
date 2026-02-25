@@ -60,8 +60,8 @@ dependencies {
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
-    // MediaPipe LLM
-    implementation("com.google.mediapipe:tasks-genai:0.10.20")
+    // llama.cpp Android Kotlin integration
+    implementation("io.github.ljcamargo:llamacpp-kotlin:0.2.0")
     implementation(libs.core.ktx)
 
     // Test

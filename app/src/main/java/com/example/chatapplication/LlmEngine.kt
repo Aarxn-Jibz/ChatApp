@@ -2,87 +2,113 @@ package com.example.chatapplication
 
 import android.content.Context
 import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.*
+import org.nehuatl.llamacpp.LlamaHelper
 import java.io.File
 
 class LlmEngine(private val context: Context) {
-    private var llmInference: LlmInference? = null
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val _llmFlow = MutableSharedFlow<LlamaHelper.LLMEvent>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
 
-    // We use a shared reference to route the callbacks from the listener to the active flow.
-    private var currentTokenChannel: Channel<Pair<String, Boolean>>? = null
+    private var llamaHelper: LlamaHelper? = null
 
-    // Configurable model path — set before calling initialize()
-    var modelPath: String = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin").absolutePath
+    // Target the specific GGUF model downlaoded by the worker / user
+    var modelPath: String = File(context.getExternalFilesDir(null), "gemma-3-4b-it-q4_0.gguf").absolutePath
+    
+    private var isModelLoaded = false
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         val modelFile = File(modelPath)
         Log.d("LLM", "Loading model from: $modelPath")
         Log.d("LLM", "File exists: ${modelFile.exists()}, Size: ${modelFile.length() / (1024 * 1024)} MB")
 
-        try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(512)
-                // FIX: Attach the result listener here during configuration
-                .setResultListener { partialResult, done ->
-                    currentTokenChannel?.trySend(Pair(partialResult ?: "", done))
-                    if (done) currentTokenChannel?.close()
-                }
-                .build()
+        if (llamaHelper == null) {
+            llamaHelper = LlamaHelper(
+                contentResolver = context.contentResolver,
+                scope = scope,
+                sharedFlow = _llmFlow
+            )
+        }
 
-            llmInference = LlmInference.createFromOptions(context, options)
-            Log.d("LLM", "SUCCESS: Model loaded.")
-        } catch (e: Exception) {
+        try {
+            // Suspend the initialization coroutine until LlamaHelper calls the completion callback
+            suspendCancellableCoroutine<Unit> { continuation ->
+                // FIX: LlamaHelper strips file:// so we MUST provide a content:// URI
+                val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    modelFile
+                )
+                
+                llamaHelper?.load(
+                    path = fileUri.toString(),
+                    contextLength = 4096,
+                ) { ctxId ->
+                    isModelLoaded = true
+                    Log.d("LLM", "SUCCESS: Model loaded with ctxId: $ctxId")
+                    if (continuation.isActive) continuation.resume(Unit) {}
+                }
+            }
+        } catch(e: Exception) {
             Log.e("LLM", "FAILED to load model: ${e.message}")
         }
     }
 
     fun generateResponseStream(prompt: String): Flow<String> = flow {
-        if (llmInference == null) {
-            emit("[Error: Local model is not loaded. Please load a model first.]")
+        if (!isModelLoaded || llamaHelper == null) {
+            emit("[Error: Local model is not loaded. Please wait for model download or load it first.]")
             return@flow
         }
-
-        // Create a new channel for this specific interaction
-        val tokenChannel = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
-
-        // Assign it to the class-level variable so the listener in initialize() can send to it
-        currentTokenChannel = tokenChannel
+        
+        // We use a local channel to bridge the SharedFlow events back into this synchronous flow builder
+        val tokenChannel = Channel<String>(Channel.UNLIMITED)
+        
+        val collectorJob = scope.launch {
+            _llmFlow.collect { event ->
+                when (event) {
+                    is LlamaHelper.LLMEvent.Ongoing -> tokenChannel.trySend(event.word)
+                    is LlamaHelper.LLMEvent.Error -> {
+                        tokenChannel.trySend("[Error generating text. Verify model integrity.]")
+                        llamaHelper?.stopPrediction()
+                        tokenChannel.close()
+                    }
+                    is LlamaHelper.LLMEvent.Done -> {
+                        llamaHelper?.stopPrediction()
+                        tokenChannel.close()
+                    }
+                    else -> {}
+                }
+            }
+        }
 
         try {
-            // FIX: generateResponseAsync takes ONLY the prompt.
-            llmInference!!.generateResponseAsync(prompt)
-
-            for ((token, done) in tokenChannel) {
+            llamaHelper?.predict(prompt)
+            // Stream the tokens to the UI as they arrive from the C++ layer
+            for (token in tokenChannel) {
                 emit(token)
-                if (done) break
             }
         } catch (e: Exception) {
             Log.e("LLM", "Inference failed: ${e.message}")
             emit("[Local inference error: ${e.message}]")
         } finally {
-            // FIX: close() is safe to call repeatedly. Removes the "Delicate API" warning.
+            collectorJob.cancel()
             tokenChannel.close()
-
-            // Clean up the reference to prevent memory leaks or stray emissions
-            if (currentTokenChannel == tokenChannel) {
-                currentTokenChannel = null
-            }
         }
     }
 
-    fun isLoaded(): Boolean = llmInference != null
+    fun isLoaded(): Boolean = isModelLoaded
 
-    @Suppress("unused") // Suppresses the unused warning until you implement it in UI
     fun release() {
-        llmInference?.close()
-        llmInference = null
-        currentTokenChannel?.close()
-        currentTokenChannel = null
+        llamaHelper?.abort()
+        llamaHelper?.release()
+        llamaHelper = null
+        isModelLoaded = false
     }
 }
