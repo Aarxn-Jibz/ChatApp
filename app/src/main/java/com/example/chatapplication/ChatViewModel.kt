@@ -42,10 +42,14 @@ class ChatViewModel : ViewModel() {
                 .toMutableList()
             currentHistory.add(ChatMessage("User", prompt))
 
-            val trimmedHistory = if (currentHistory.size > contextWindowSize) {
-                currentHistory.takeLast(contextWindowSize).toMutableList()
+            val filteredHistory = currentHistory.filter { 
+                !it.isError && it.text != "Type a message below to start chatting!" && it.text != "Chat cleared. Start a new conversation!"
+            }.toMutableList()
+
+            val trimmedHistory = if (filteredHistory.size > contextWindowSize) {
+                filteredHistory.takeLast(contextWindowSize).toMutableList()
             } else {
-                currentHistory
+                filteredHistory
             }
 
             // Show thinking indicator
@@ -53,12 +57,11 @@ class ChatViewModel : ViewModel() {
                 add(ChatMessage("Bot", "...", isThinking = true))
             }
 
-            val fullPrompt = trimmedHistory.joinToString("\n") { "${it.role}: ${it.text}" } + "\nBot: "
             var currentBotResponse = ""
 
             withContext(Dispatchers.IO) {
                 try {
-                    routingManager.getChatResponse(fullPrompt, isOnlineMode, apiKey).collect { token ->
+                    routingManager.getChatResponse(trimmedHistory, isOnlineMode, apiKey).collect { token ->
                         currentBotResponse += token
                         withContext(Dispatchers.Main) {
                             val actualSource = if (currentBotResponse.contains("Falling back to Local Model")) "Local" 
