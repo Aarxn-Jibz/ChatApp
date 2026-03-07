@@ -39,7 +39,7 @@ class ModelDownloadWorker(
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setContentTitle("Downloading AI Model")
-            .setContentText("Fetching the 1.5GB Gemma model. Please wait...")
+            .setContentText("Fetching the Qwen2.5 GGUF model. Please wait...")
             .setSmallIcon(android.R.drawable.ic_popup_sync)
             .setOngoing(true)
             .build()
@@ -48,22 +48,24 @@ class ModelDownloadWorker(
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        // Replace this with the actual HuggingFace or remote server URL
-        val modelUrl = "https://huggingface.co/datasets/aarxn0123/AIApp/resolve/main/gemma-1.1-2b-it-cpu-int4.bin?download=true"
-        
-        // The expected SHA-256 hash of the Gemma 1.1 2B INT4 model
-        val expectedSha256 = "ba103a4c9a7d0fc9d71015836e4c2412867db716e411000cc8573e882dce44cd" 
+        // Direct download URL for the target Qwen gguf
+        val modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q3_k_m.gguf?download=true"
 
-        val file = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin")
+        // Known file size for Qwen2.5-1.5B Q3_K_M (~709 MB).
+        // Used as a fallback when HuggingFace responds with chunked transfer encoding
+        // (Content-Length == -1), so the progress bar always shows a percentage.
+        val fallbackFileSize = 743_571_264L
+
+        val file = File(context.getExternalFilesDir(null), "qwen2.5-1.5b-instruct-q3_k_m.gguf")
         
-        // Skip if already downloaded and verified
-        if (file.exists() /* && calculateSHA256(file) == expectedSha256 */) {
-            Log.d("DownloadWorker", "Model exists. Checksum verification bypassed.")
+        // Skip if already downloaded
+        if (file.exists()) {
+            Log.d("DownloadWorker", "Model already exists. Skipping download.")
             return@withContext Result.success()
         }
 
         try {
-            Log.d("DownloadWorker", "Starting 1.5GB model download...")
+            Log.d("DownloadWorker", "Starting model download from HuggingFace...")
             val url = URL(modelUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
@@ -74,29 +76,31 @@ class ModelDownloadWorker(
                 return@withContext Result.retry()
             }
 
-            val fileLength = connection.contentLength
-            val inputStream = connection.inputStream
-            val outputStream = FileOutputStream(file)
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
+            // Use server-provided length if available; fall back to known constant
+            // for HuggingFace chunked responses where contentLength == -1.
+            val reportedLength = connection.contentLengthLong
+            val effectiveLength = if (reportedLength > 0) reportedLength else fallbackFileSize
+
             var totalBytesRead = 0L
             var lastReportedProgress = -1
+            val buffer = ByteArray(8192)
 
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                outputStream.write(buffer, 0, bytesRead)
-                totalBytesRead += bytesRead
-                
-                if (fileLength > 0) {
-                    val progress = (totalBytesRead * 100 / fileLength).toInt()
-                    if (progress != lastReportedProgress) {
-                        setProgress(workDataOf("PROGRESS" to progress))
-                        lastReportedProgress = progress
+            // Fix: use nested use{} blocks so both streams close even if an exception is thrown
+            connection.inputStream.use { inputStream ->
+                FileOutputStream(file).use { outputStream ->
+                    var bytesRead: Int
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        outputStream.write(buffer, 0, bytesRead)
+                        totalBytesRead += bytesRead
+
+                        val progress = (totalBytesRead * 100 / effectiveLength).toInt().coerceIn(0, 99)
+                        if (progress != lastReportedProgress) {
+                            setProgress(workDataOf("PROGRESS" to progress))
+                            lastReportedProgress = progress
+                        }
                     }
                 }
             }
-
-            outputStream.close()
-            inputStream.close()
             Log.d("DownloadWorker", "Download complete. Verifying SHA-256 Checksum...")
 
             // Post-download checksum verification (Disabled for now)

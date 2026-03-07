@@ -19,6 +19,13 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            }
+        }
     }
 
     buildTypes {
@@ -38,8 +45,18 @@ android {
         compose = true
         buildConfig = true
     }
-    kotlinOptions {
-        jvmTarget = "11"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1+"
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
     }
 }
 
@@ -63,8 +80,7 @@ dependencies {
     // DataStore Preferences
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
-    // MediaPipe LLM
-    implementation("com.google.mediapipe:tasks-genai:0.10.20")
+    // Llama.cpp (via NDK)
     implementation(libs.core.ktx)
 
     // Test

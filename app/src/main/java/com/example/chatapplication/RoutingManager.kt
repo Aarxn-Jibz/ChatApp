@@ -45,7 +45,8 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
 
     private fun getRemoteResponse(messages: List<ChatMessage>, apiKey: String): Flow<String> = flow {
         try {
-            val url = URL("https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=$apiKey")
+            // Use the SSE streaming endpoint so tokens are emitted as they arrive
+            val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=$apiKey")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
@@ -53,7 +54,7 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
 
             val systemInstruction = "You are a helpful, conversational AI companion. Respond naturally and concisely. Do not use hashtags or sound like a social media post."
             val partsArray = JSONArray()
-            
+
             for (message in messages) {
                 val role = if (message.role == "User") "user" else "model"
                 val partObj = JSONObject().apply { put("text", message.text) }
@@ -70,48 +71,52 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
                 })
                 put("contents", partsArray)
             }
-            val jsonPayload = jsonPayloadObj.toString()
 
             OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-                writer.write(jsonPayload)
+                writer.write(jsonPayloadObj.toString())
                 writer.flush()
             }
 
             val responseCode = connection.responseCode
-            Log.d("RoutingManager", "Cloud response code: $responseCode")
+            Log.d("RoutingManager", "Cloud SSE response code: $responseCode")
 
             if (responseCode == HttpURLConnection.HTTP_OK) {
-                val responseString = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { it.readText() }
+                // Read SSE stream line-by-line and emit each text chunk immediately
+                BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val trimmed = line!!.trim()
+                        if (!trimmed.startsWith("data: ")) continue
 
-                // FIX: JSONObject parsing — handle candidates and safety ratings gracefully
-                try {
-                    val json = JSONObject(responseString)
-                    
-                    // Check if candidates array exists and has items
-                    val candidates = json.optJSONArray("candidates")
-                    if (candidates != null && candidates.length() > 0) {
-                        val text = candidates
-                            .getJSONObject(0)
-                            .getJSONObject("content")
-                            .getJSONArray("parts")
-                            .getJSONObject(0)
-                            .getString("text")
-                        emit(text)
-                    } 
-                    // Fallback to checking for safety feedback if blocked
-                    else if (json.has("promptFeedback")) {
-                        val feedback = json.getJSONObject("promptFeedback")
-                        val blockReason = feedback.optString("blockReason", "Unknown")
-                        emit("[Blocked by Safety Filters: $blockReason]")
-                    } else {
-                        Log.e("RoutingManager", "Unexpected response format. Falling back to local model.")
-                        emit("[Notice: Cloud API returned unexpected format. Falling back to Local Model]\n\n")
-                        getChatResponse(messages, false, "").collect { emit(it) }
+                        val jsonStr = trimmed.removePrefix("data: ")
+                        if (jsonStr == "[DONE]") break
+
+                        try {
+                            val json = JSONObject(jsonStr)
+                            val candidates = json.optJSONArray("candidates") ?: continue
+                            if (candidates.length() == 0) continue
+
+                            val candidate = candidates.getJSONObject(0)
+
+                            // Emit text chunk from this SSE event
+                            val content = candidate.optJSONObject("content")
+                            if (content != null) {
+                                val parts = content.optJSONArray("parts")
+                                if (parts != null && parts.length() > 0) {
+                                    val text = parts.getJSONObject(0).optString("text", "")
+                                    if (text.isNotEmpty()) emit(text)
+                                }
+                            }
+
+                            // Stop if the model signalled it finished
+                            val finishReason = candidate.optString("finishReason", "")
+                            if (finishReason == "STOP" || finishReason == "MAX_TOKENS" ||
+                                finishReason == "SAFETY" || finishReason == "RECITATION") break
+
+                        } catch (parseEx: Exception) {
+                            Log.w("RoutingManager", "Failed to parse SSE chunk: ${parseEx.message}")
+                        }
                     }
-                } catch (parseEx: Exception) {
-                    Log.e("RoutingManager", "JSON parse failed: ${parseEx.message}. Falling back to local model.")
-                    emit("[Notice: Cloud API parsing failed. Falling back to Local Model]\n\n")
-                    getChatResponse(messages, false, "").collect { emit(it) }
                 }
             } else {
                 val errorBody = connection.errorStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""

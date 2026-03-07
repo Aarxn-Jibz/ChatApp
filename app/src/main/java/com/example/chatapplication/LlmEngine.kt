@@ -2,22 +2,41 @@ package com.example.chatapplication
 
 import android.content.Context
 import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
 
 class LlmEngine(private val context: Context) {
-    private var llmInference: LlmInference? = null
 
-    // We use a shared reference to route the callbacks from the listener to the active flow.
+    // Native pointers to C++ memory
+    private var enginePtr: Long = 0L
+
+    // We use a shared reference to route the callbacks from the JNI listener to the active flow.
     private var currentTokenChannel: Channel<Pair<String, Boolean>>? = null
 
     // Configurable model path — set before calling initialize()
-    var modelPath: String = File(context.getExternalFilesDir(null), "gemma-1.1-2b-it-cpu-int4.bin").absolutePath
+    var modelPath: String = File(context.getExternalFilesDir(null), "qwen2.5-1.5b-instruct-q3_k_m.gguf").absolutePath
+
+    companion object {
+        init {
+            try {
+                System.loadLibrary("llama_android")
+                Log.d("LLM", "Native library llama_android loaded.")
+            } catch (e: Exception) {
+                Log.e("LLM", "Failed to load llama native library.", e)
+            }
+        }
+    }
+
+    // External JNI methods
+    private external fun initNative(modelPath: String): Long
+    private external fun generateNative(enginePtr: Long, prompt: String)
+    private external fun releaseNative(enginePtr: Long)
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         val modelFile = File(modelPath)
@@ -25,40 +44,51 @@ class LlmEngine(private val context: Context) {
         Log.d("LLM", "File exists: ${modelFile.exists()}, Size: ${modelFile.length() / (1024 * 1024)} MB")
 
         try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(512)
-                // FIX: Attach the result listener here during configuration
-                .setResultListener { partialResult, done ->
-                    currentTokenChannel?.trySend(Pair(partialResult ?: "", done))
-                    if (done) currentTokenChannel?.close()
+            if (modelFile.exists()) {
+                enginePtr = initNative(modelPath)
+                if (enginePtr != 0L) {
+                    Log.d("LLM", "SUCCESS: Model loaded via JNI. Ptr: $enginePtr")
+                } else {
+                    Log.e("LLM", "FAILED: JNI returned 0 pointer.")
                 }
-                .build()
-
-            llmInference = LlmInference.createFromOptions(context, options)
-            Log.d("LLM", "SUCCESS: Model loaded.")
+            } else {
+                Log.e("LLM", "FAILED: Model file not found.")
+            }
         } catch (e: Exception) {
-            Log.e("LLM", "FAILED to load model: ${e.message}")
+            Log.e("LLM", "FAILED to load model natively: ${e.message}")
         }
     }
 
     fun generateResponseStream(prompt: String): Flow<String> = flow {
-        if (llmInference == null) {
-            emit("[Error: Local model is not loaded. Please load a model first.]")
+        if (enginePtr == 0L) {
+            emit("[Error: Local model is not loaded. Please wait for download.]")
             return@flow
         }
 
-        // Create a new channel for this specific interaction
         val tokenChannel = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
-
-        // Assign it to the class-level variable so the listener in initialize() can send to it
         currentTokenChannel = tokenChannel
 
         try {
-            // FIX: generateResponseAsync takes ONLY the prompt.
-            llmInference!!.generateResponseAsync(prompt)
+            // Run the blocking JNI call on a background thread.
+            // The thread closes the channel in its finally block, so the collection
+            // loop below terminates cleanly whether the call succeeds or crashes.
+            Thread {
+                try {
+                    generateNative(enginePtr, prompt)
+                } catch (e: Exception) {
+                    Log.e("LLM", "Inference native crashed: ${e.message}")
+                } finally {
+                    // Always close the channel when the native call finishes or crashes,
+                    // so the for-loop below is guaranteed to exit.
+                    tokenChannel.close()
+                }
+            }.start()
 
+            // Collect tokens from the JNI callback loop.
+            // ensureActive() throws CancellationException if the collecting coroutine
+            // was cancelled, causing the finally block below to run and clean up.
             for ((token, done) in tokenChannel) {
+                currentCoroutineContext().ensureActive()
                 emit(token)
                 if (done) break
             }
@@ -66,22 +96,31 @@ class LlmEngine(private val context: Context) {
             Log.e("LLM", "Inference failed: ${e.message}")
             emit("[Local inference error: ${e.message}]")
         } finally {
-            // FIX: close() is safe to call repeatedly. Removes the "Delicate API" warning.
             tokenChannel.close()
-
-            // Clean up the reference to prevent memory leaks or stray emissions
             if (currentTokenChannel == tokenChannel) {
                 currentTokenChannel = null
             }
         }
     }
 
-    fun isLoaded(): Boolean = llmInference != null
+    // This method is called by C++ JNI code when a new token is predicted
+    @Suppress("unused")
+    fun onTokenGenerated(tokenBytes: ByteArray, isComplete: Boolean) {
+        val decodedToken = String(tokenBytes, Charsets.UTF_8)
+        currentTokenChannel?.trySend(Pair(decodedToken, isComplete))
+        if (isComplete) {
+            currentTokenChannel?.close()
+        }
+    }
 
-    @Suppress("unused") // Suppresses the unused warning until you implement it in UI
+    fun isLoaded(): Boolean = enginePtr != 0L
+
+    @Suppress("unused")
     fun release() {
-        llmInference?.close()
-        llmInference = null
+        if (enginePtr != 0L) {
+            releaseNative(enginePtr)
+            enginePtr = 0L
+        }
         currentTokenChannel?.close()
         currentTokenChannel = null
     }
