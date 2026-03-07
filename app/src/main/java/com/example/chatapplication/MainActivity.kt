@@ -244,8 +244,8 @@ fun ChatScreen(
                         Text("Chat Application", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         val modeLabel = when {
                             isOnlineMode && isConnected -> "Cloud · Gemini 2.5 Flash"
-                            isOnlineMode && !isConnected -> "Local · Gemma (Offline Fallback)"
-                            llmEngine.isLoaded() -> "Local · Gemma"
+                            isOnlineMode && !isConnected -> "Local · Qwen (Offline Fallback)"
+                            llmEngine.isLoaded() -> "Local · Qwen"
                             else -> "No model loaded"
                         }
                         Text(modeLabel, color = Color.Gray, fontSize = 11.sp)
