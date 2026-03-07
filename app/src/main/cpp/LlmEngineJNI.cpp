@@ -40,10 +40,10 @@ Java_com_example_chatapplication_LlmEngine_initNative(
 
     // Context params
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx        = 2048;
+    cparams.n_ctx        = 512;
     cparams.n_batch      = 512;
-    cparams.n_threads    = 4; // conservative for mobile
-    cparams.n_threads_batch = 4;
+    cparams.n_threads    = 2; // Strict 2 limits to prevent OOM kills on 4GB RAM
+    cparams.n_threads_batch = 2;
     cparams.no_perf      = true;
 
     llama_context* ctx = llama_init_from_model(model, cparams);
@@ -143,6 +143,8 @@ Java_com_example_chatapplication_LlmEngine_generateNative(
     int       n_pos          = n_tokens; // position counter continues from prompt end
     bool      eog_sent       = false;
 
+    llama_batch next = llama_batch_init(1, 0, 1);
+
     for (int i = 0; i < max_new_tokens; i++) {
         // Sample next token from the last logits
         llama_token token_id = llama_sampler_sample(smpl, ctx, -1);
@@ -167,7 +169,6 @@ Java_com_example_chatapplication_LlmEngine_generateNative(
         }
 
         // Feed the sampled token back for the next step
-        llama_batch next = llama_batch_init(1, 0, 1);
         next.n_tokens     = 1;
         next.token[0]     = token_id;
         next.pos[0]       = n_pos++;
@@ -177,11 +178,11 @@ Java_com_example_chatapplication_LlmEngine_generateNative(
 
         if (llama_decode(ctx, next) != 0) {
             LOGE("llama_decode failed during generation step %d", i);
-            llama_batch_free(next);
             break;
         }
-        llama_batch_free(next);
     }
+
+    llama_batch_free(next);
 
     // If we hit max_tokens without a natural EOS, send the final done signal
     if (!eog_sent) {

@@ -26,18 +26,18 @@ class RoutingManager(private val context: Context, private val localEngine: LlmE
             
             for (message in messages) {
                 if (message.role == "User") {
-                    localPromptBuilder.append("<start_of_turn>user\n")
+                    localPromptBuilder.append("<|im_start|>user\n")
                     if (isFirstUserMessage) {
                         localPromptBuilder.append(systemPrompt).append("\n\n")
                         isFirstUserMessage = false
                     }
-                    localPromptBuilder.append(message.text).append("<end_of_turn>\n")
+                    localPromptBuilder.append(message.text).append("<|im_end|>\n")
                 } else if (message.role == "Bot") {
-                    localPromptBuilder.append("<start_of_turn>model\n")
-                    localPromptBuilder.append(message.text).append("<end_of_turn>\n")
+                    localPromptBuilder.append("<|im_start|>assistant\n")
+                    localPromptBuilder.append(message.text).append("<|im_end|>\n")
                 }
             }
-            localPromptBuilder.append("<start_of_turn>model\n")
+            localPromptBuilder.append("<|im_start|>assistant\n")
             
             localEngine.generateResponseStream(localPromptBuilder.toString())
         }

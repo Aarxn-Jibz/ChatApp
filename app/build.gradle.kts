@@ -22,7 +22,7 @@ android {
         
         externalNativeBuild {
             cmake {
-                cppFlags += "-std=c++17"
+                cppFlags += "-std=c++17 -O3"
                 abiFilters += listOf("arm64-v8a", "x86_64")
             }
         }

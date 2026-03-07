@@ -63,12 +63,16 @@ class ChatViewModel : ViewModel() {
                 try {
                     routingManager.getChatResponse(trimmedHistory, isOnlineMode, apiKey).collect { token ->
                         currentBotResponse += token
+                        
+                        // Strip internal chatml tags from the response before showing it
+                        val cleanResponse = currentBotResponse.replace("<|im_end|>", "").trimEnd()
+                        
                         withContext(Dispatchers.Main) {
                             val actualSource = if (currentBotResponse.contains("Falling back to Local Model")) "Local" 
                                                else if (isOnlineMode && networkMonitor.isConnected.value) "Cloud" 
                                                else "Local"
                             _uiState.value = trimmedHistory.toMutableList().apply {
-                                add(ChatMessage("Bot", currentBotResponse, source = actualSource))
+                                add(ChatMessage("Bot", cleanResponse, source = actualSource))
                             }
                         }
                     }
