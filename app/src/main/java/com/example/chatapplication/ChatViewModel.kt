@@ -31,7 +31,7 @@ class ChatViewModel : ViewModel() {
     // Context window size — configurable via Settings (Phase 5)
     var contextWindowSize: Int = 6
 
-    fun sendPrompt(prompt: String, routingManager: RoutingManager, isOnlineMode: Boolean, apiKey: String, networkMonitor: NetworkMonitor) {
+    fun sendPrompt(prompt: String, routingManager: RoutingManager, isOnlineMode: Boolean, apiKey: String, networkMonitor: NetworkMonitor, context: android.content.Context) {
         if (_isGenerating.value) return // Guard against concurrent sends
 
         viewModelScope.launch(Dispatchers.Main) {
@@ -40,7 +40,12 @@ class ChatViewModel : ViewModel() {
             val currentHistory = _uiState.value
                 .filter { !it.isThinking }
                 .toMutableList()
-            currentHistory.add(ChatMessage("User", prompt))
+            
+            val userMessage = ChatMessage("User", prompt)
+            currentHistory.add(userMessage)
+            
+            // Log the user's message
+            com.example.chatapplication.utils.ChatLogger.logMessage(context, userMessage)
 
             val filteredHistory = currentHistory.filter { 
                 !it.isError && it.text != "Type a message below to start chatting!" && it.text != "Chat cleared. Start a new conversation!"
@@ -67,10 +72,22 @@ class ChatViewModel : ViewModel() {
                             val actualSource = if (currentBotResponse.contains("Falling back to Local Model")) "Local" 
                                                else if (isOnlineMode && networkMonitor.isConnected.value) "Cloud" 
                                                else "Local"
+                            val botMessage = ChatMessage("Bot", currentBotResponse, source = actualSource)
                             _uiState.value = trimmedHistory.toMutableList().apply {
-                                add(ChatMessage("Bot", currentBotResponse, source = actualSource))
+                                add(botMessage)
                             }
                         }
+                    }
+                    
+                    // Log the final bot's response once the stream is complete
+                    withContext(Dispatchers.Main) {
+                        val finalSource = if (currentBotResponse.contains("Falling back to Local Model")) "Local" 
+                                           else if (isOnlineMode && networkMonitor.isConnected.value) "Cloud" 
+                                           else "Local"
+                        com.example.chatapplication.utils.ChatLogger.logMessage(
+                            context, 
+                            ChatMessage("Bot", currentBotResponse, source = finalSource)
+                        )
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {

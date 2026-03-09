@@ -2,8 +2,8 @@ package com.example.chatapplication
 
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -32,6 +32,18 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var llmEngine: LlmEngine
     private lateinit var routingManager: RoutingManager
+    
+    // Launcher for exporting logs
+    private val exportLogLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            val success = com.example.chatapplication.utils.ChatLogger.exportTodayLog(this, uri)
+            if (success) {
+                Toast.makeText(this, "Log exported successfully!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Failed to export log.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,7 +61,11 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D0D)) {
-                    AppNavigation(llmEngine, routingManager)
+                    AppNavigation(llmEngine, routingManager) {
+                        // Trigger the launcher from Compose
+                        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                        exportLogLauncher.launch("chat_log_${dateFormat.format(java.util.Date())}.txt")
+                    }
                 }
             }
         }
@@ -57,7 +73,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
+fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager, onExportLog: () -> Unit) {
     var isModelLoaded by remember { mutableStateOf(false) }
     var skipToCloud by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -74,7 +90,8 @@ fun AppNavigation(llmEngine: LlmEngine, routingManager: RoutingManager) {
             routingManager = routingManager, 
             llmEngine = llmEngine, 
             networkMonitor = networkMonitor,
-            initialOnlineMode = skipToCloud
+            initialOnlineMode = skipToCloud,
+            onExportLog = onExportLog
         )
     }
 }
@@ -149,6 +166,7 @@ fun ChatScreen(
     llmEngine: LlmEngine,
     networkMonitor: NetworkMonitor,
     initialOnlineMode: Boolean,
+    onExportLog: () -> Unit,
     viewModel: ChatViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -274,6 +292,11 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Online", color = if (isOnlineMode) Color(0xFF4CAF50) else Color.Gray, fontSize = 12.sp)
                         Spacer(modifier = Modifier.width(8.dp))
+                        
+                        // Export Logs Button
+                        IconButton(onClick = onExportLog) {
+                            Text("💾", fontSize = 16.sp)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0D0D0D))
@@ -344,7 +367,7 @@ fun ChatScreen(
                                 if (isOnlineMode && savedApiKey.isBlank()) {
                                     showApiKeyDialog = true
                                 } else {
-                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, savedApiKey, networkMonitor)
+                                    viewModel.sendPrompt(trimmed, routingManager, isOnlineMode, savedApiKey, networkMonitor, context)
                                     userInput = ""
                                 }
                             }
